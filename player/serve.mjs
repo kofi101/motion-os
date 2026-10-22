@@ -7,6 +7,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import crypto from 'node:crypto';
 import {fileURLToPath} from 'node:url';
 import {exec, spawn} from 'node:child_process';
 
@@ -47,6 +48,7 @@ let port = portArg === true ? NaN : Number(portArg || process.env.PORT || 4321);
 if (!Number.isInteger(port) || port < 1 || port > 65535) { console.error('Motion OS: --port needs a number from 1 to 65535'); process.exit(1); }
 const dir = path.resolve(args[0] || '.');
 const page = path.join(path.dirname(fileURLToPath(import.meta.url)), 'index.html');
+const token = crypto.randomBytes(16).toString('hex');  // handed to our page only; required to start an export
 if (!fs.existsSync(path.join(dir, 'reel.json'))) { console.error(`Motion OS: no reel.json in ${dir}`); process.exit(1); }
 
 // Export: reel.json "export": {"cwd": build folder, "cmd": shell command}. The command gets $PROPS (a JSON file with the
@@ -82,21 +84,26 @@ function startExport(props) {
 }
 
 const server = http.createServer((req, res) => {
+  // Answer only requests addressed to this machine by name. Blocks DNS-rebinding pages from reading the project.
+  if (!/^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/.test(req.headers.host || '')) return res.writeHead(403).end('Forbidden');
   let url;
   try { url = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); }
   catch { return res.writeHead(400).end('Bad request'); }  // e.g. "/%E0": a malformed URL must not take the server down
   if (url === '/export') {
-    // Only our own page may start a render (blocks other websites posting to localhost).
-    if (req.method === 'POST' && req.headers.origin && !/^http:\/\/(localhost|127\.0\.0\.1):\d+$/.test(req.headers.origin)) return res.writeHead(403).end();
+    // Only our own page may start a render: it sends this run's token, which other sites can't read. The custom header
+    // also forces a CORS preflight that we never approve.
+    if (req.method === 'POST' && req.headers['x-motionos-token'] !== token) return res.writeHead(403).end();
     const send = (j) => res.writeHead(200, {'Content-Type': 'application/json'}).end(JSON.stringify(j));
     if (req.method !== 'POST') return send(job);
     let body = ''; req.on('data', (c) => body += c);
     return req.on('end', () => { try { send(startExport(JSON.parse(body || '{}'))); } catch (e) { send({state: 'error', line: e.message}); } });
   }
-  let file = url === '/' ? page : path.resolve(dir, '.' + url);
-  if (file !== page && !file.startsWith(dir + path.sep)) return res.writeHead(403).end('Forbidden');
+  if (url === '/') return fs.readFile(page, 'utf8', (err, html) => err ? res.writeHead(500).end()
+    : res.writeHead(200, {'Content-Type': TYPES['.html'], 'Cache-Control': 'no-store'}).end(html.replace('name="motionos-token" content=""', `name="motionos-token" content="${token}"`)));
+  let file = path.resolve(dir, '.' + url);
+  if (!file.startsWith(dir + path.sep)) return res.writeHead(403).end('Forbidden');
   // Remotion's staticFile() paths point at the site root; serve them from public/.
-  if (file !== page && !fs.existsSync(file) && fs.existsSync(path.join(dir, 'public', '.' + url))) file = path.join(dir, 'public', '.' + url);
+  if (!fs.existsSync(file) && fs.existsSync(path.join(dir, 'public', '.' + url))) file = path.join(dir, 'public', '.' + url);
   fs.stat(file, (err, stat) => {
     if (err || !stat.isFile()) return res.writeHead(404).end('Not found');
     // The file can vanish between stat and read (Claude re-rendering video.mp4); drop the response instead of crashing.
