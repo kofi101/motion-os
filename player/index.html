@@ -794,7 +794,8 @@ function focusNote(id){ const n = st.notes.find(n => n.id === id); ui.selNote = 
 
 /* ================= send to Claude: one prompt to copy and paste ================= */
 function describe(path, v, from = baseOf(path)){
-  const show = x => Array.isArray(x) ? x.map(r => Object.values(r).join(' | ')).join(' / ') : typeof x === 'string' && x.includes('/') ? assetName(x) : JSON.stringify(x);
+  // Lists go out as JSON so Claude sees column names; only real asset ids are swapped for file names (not any text with a "/").
+  const show = x => typeof x === 'string' && (x === 'brand.logo' || P.assets.some(a => a.id === x)) ? assetName(x) : JSON.stringify(x);
   const nice = path.startsWith('brand.color.') ? `Style · ${P.brand.colors.find(c => c.id === path.slice(12)).name} color (used everywhere)` : path.startsWith('brand.font.') ? `Style · ${P.brand.fonts.find(f => f.id === path.slice(11)).name} font` : path === 'brand.logo' ? 'Style · Logo' : path === 'audio.music' ? 'Audio · Music track' : path === 'audio.musicVol' ? 'Audio · Music volume' : path === 'audio.sfxVol' ? 'Audio · Effects volume' : null;
   if (nice) return `- ${nice}: ${show(from)} -> ${show(v)}`;
   const [id, k] = path.split('.'), e = elById(id);
@@ -811,8 +812,9 @@ function prompt(){
   if (edits.length) { L.push('## Edits (apply exactly)'); edits.forEach(([k, v]) => L.push(line(k, v))); L.push(''); }
   const notes = openNotes();
   if (notes.length || motion.length) { L.push('## Notes (what I want changed)');
-    notes.forEach((n, i) => { const e = n.el && elById(n.el), s = sceneAt(n.t); L.push(`${i + 1}. [${fmt(n.t)} · ${s.id} ${s.name} · x ${n.x}% y ${n.y}%${e ? ` · on "${e.label}"${e.src ? ' (' + e.src + ')' : ''}` : ''}] ${n.text}`); });
-    motion.forEach(([k, v], i) => { const e = elById(k.split('.')[0]); L.push(`${notes.length + i + 1}. [${fmt(elTime(e)[0])} · ${e.s} · ${e.label} motion] ${v}`); }); L.push(''); }
+    // Numbered like the pins on the frame, so "note 3" means the same thing to the user and to Claude.
+    notes.forEach(n => { const e = n.el && elById(n.el), s = sceneAt(n.t); L.push(`${st.notes.indexOf(n) + 1}. [${fmt(n.t)} · ${s.id} ${s.name} · x ${n.x}% y ${n.y}%${e ? ` · on "${e.label}"${e.src ? ' (' + e.src + ')' : ''}` : ''}] ${n.text}`); });
+    motion.forEach(([k, v], i) => { const e = elById(k.split('.')[0]); L.push(`${st.notes.length + i + 1}. [${fmt(elTime(e)[0])} · ${e.s} · ${e.label} motion] ${v}`); }); L.push(''); }
   const links = st.links.filter(l => !l.sent);
   if (links.length) { L.push('## Links to download into assets/'); links.forEach(l => L.push('- ' + l.url)); L.push(''); }
   L.push('## Scenes', P.scenes.map(s => `${s.id} ${s.name} (${fmt(s.t[0])}-${fmt(s.t[1])}): ${st.status[s.id] === 'approved' ? 'approved, do not touch' : st.status[s.id] === 'changes' ? 'needs changes' : 'in review'}`).join('\n'), '');
@@ -829,7 +831,8 @@ $('#sendBtn').onclick = () => {
   const sent = () => { st.sent = [...new Set([...st.sent, ...openNotes().map(n => n.id)])]; st.sentSnap = JSON.parse(JSON.stringify(st.over)); st.sentBase = Object.fromEntries(Object.keys(st.over).map(k => [k, baseOf(k)])); st.links.forEach(l => l.sent = true); renderAll(); };
   d.querySelector('#doCopy').onclick = async () => {
     try { await navigator.clipboard.writeText(text); sent(); d.remove(); toast('Copied. Paste it into Claude.'); }
-    catch (e) { const ta = d.querySelector('textarea'); ta.focus(); ta.select(); sent(); toast('Selected. Press Cmd+C, then paste it into Claude.'); }
+    catch (e) { const ta = d.querySelector('textarea'); ta.focus(); ta.select(); toast('Selected. Press Cmd+C, then paste it into Claude.');
+      ta.addEventListener('copy', () => { sent(); d.remove(); toast('Copied. Paste it into Claude.'); }, {once:true}); }  // only counts as sent once copied
   };
 };
 
