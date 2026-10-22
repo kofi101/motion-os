@@ -89,6 +89,7 @@ const server = http.createServer((req, res) => {
   let url;
   try { url = decodeURIComponent(new URL(req.url, 'http://localhost').pathname); }
   catch { return res.writeHead(400).end('Bad request'); }  // e.g. "/%E0": a malformed URL must not take the server down
+  if (url === '/__motionos') return res.writeHead(200, {'Content-Type': 'application/json'}).end(JSON.stringify({dir}));  // see 'error' below
   if (url === '/export') {
     // Only our own page may start a render: it sends this run's token, which other sites can't read. The custom header
     // also forces a CORS preflight that we never approve.
@@ -120,13 +121,25 @@ const server = http.createServer((req, res) => {
   });
 });
 
+const open = (url) => noOpen || exec(`${process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start ""' : 'xdg-open'} ${url}`);
 server.on('error', (e) => {
   if (e.code !== 'EADDRINUSE') { console.error(`Motion OS: can't listen on port ${port}: ${e.message}`); process.exit(1); }
-  port += 1; server.listen(port, '127.0.0.1');  // try the next port
+  // If the port already serves this project, reuse it rather than starting a second server on the next port. Edits are
+  // saved per origin (port included), so a new port would make them look lost and two tabs would overwrite each other.
+  let done = false;
+  const next = () => { if (done) return; done = true; port += 1; server.listen(port, '127.0.0.1'); };  // try the next port
+  http.get(`http://127.0.0.1:${port}/__motionos`, (r) => {
+    let body = ''; r.on('data', (c) => body += c);
+    r.on('end', () => {
+      let same = false; try { same = JSON.parse(body).dir === dir; } catch {}
+      if (!same) return next();
+      done = true; console.log(`Motion OS: already running at http://localhost:${port}  (project: ${dir})`); open(`http://localhost:${port}`); process.exit(0);
+    });
+  }).on('error', next).setTimeout(1000, function () { this.destroy(); });
 });
 server.on('listening', () => {
   const url = `http://localhost:${port}`;
   console.log(`Motion OS: ${url}  (project: ${dir})  Ctrl+C to stop`);
-  if (!noOpen) exec(`${process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start ""' : 'xdg-open'} ${url}`);
+  open(url);
 });
 server.listen(port, '127.0.0.1');
